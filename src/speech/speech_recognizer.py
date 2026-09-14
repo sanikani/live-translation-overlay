@@ -60,11 +60,15 @@ class SpeechRecognitionService(QObject):
             recognizer.session_started.connect(self._on_session_started)
             recognizer.session_stopped.connect(self._on_session_stopped)
 
-            recognizer.start_continuous_recognition_async().get()
-
+            # 콜백은 별도 스레드에서 빠르게 호출될 수 있으므로
+            # 인식 시작 요청 전에 상태를 먼저 설정한다.
             self._recognizer = recognizer
             self._running = True
-            self.status_changed.emit("듣는 중")
+
+            recognizer.start_continuous_recognition_async().get()
+
+            if self._running:
+                self.status_changed.emit("듣는 중")
         except Exception as exc:  # SDK/장치 초기화 실패를 사용자 메시지로 변환
             self._recognizer = None
             self._running = False
