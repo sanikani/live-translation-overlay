@@ -302,10 +302,10 @@ class MainWindow(QMainWindow):
             font_size=self.font_slider.value(),
         )
 
-    def _apply_overlay_screen(self) -> None:
+    def _apply_overlay_screen(self, _index: int = -1) -> None:
         self._overlay.set_target_screen(self._selected_screen())
 
-    def _apply_overlay_position(self) -> None:
+    def _apply_overlay_position(self, _index: int = -1) -> None:
         self._overlay.set_position(
             self.position_combo.currentData() or "bottom"
         )
