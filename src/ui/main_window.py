@@ -118,7 +118,11 @@ class MainWindow(QMainWindow):
         self.screen_combo.currentIndexChanged.connect(
             self._apply_overlay_screen
         )
-        overlay_layout.addWidget(self.screen_combo, 0, 1, 1, 2)
+        overlay_layout.addWidget(self.screen_combo, 0, 1)
+
+        self.screen_refresh_button = QPushButton("화면 새로고침")
+        self.screen_refresh_button.clicked.connect(self._refresh_screens)
+        overlay_layout.addWidget(self.screen_refresh_button, 0, 2)
 
         overlay_layout.addWidget(QLabel("자막 위치"), 1, 0)
         self.position_combo = QComboBox()
@@ -361,6 +365,7 @@ class MainWindow(QMainWindow):
         self.microphone_combo.setEnabled(False)
         self.refresh_button.setEnabled(False)
         self.screen_combo.setEnabled(False)
+        self.screen_refresh_button.setEnabled(False)
 
         for checkbox in self._language_checkboxes.values():
             checkbox.setEnabled(False)
@@ -467,6 +472,7 @@ class MainWindow(QMainWindow):
         self.microphone_combo.setEnabled(True)
         self.refresh_button.setEnabled(True)
         self.screen_combo.setEnabled(True)
+        self.screen_refresh_button.setEnabled(True)
 
         for checkbox in self._language_checkboxes.values():
             checkbox.setEnabled(True)
