@@ -19,7 +19,7 @@ class SubtitleOverlayWindow(QWidget):
         super().__init__(None)
 
         flags = (
-            Qt.WindowType.Tool
+            Qt.WindowType.Window
             | Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.WindowTransparentForInput
