@@ -12,7 +12,7 @@ from src.config.settings import Settings
 class TranslationService(QObject):
     """Azure Translator 호출을 UI 스레드 밖에서 순차 처리한다."""
 
-    translation_ready = Signal(str, str, str)
+    translation_ready = Signal(str, object)
     status_changed = Signal(str)
     error_occurred = Signal(str)
 
@@ -24,13 +24,15 @@ class TranslationService(QObject):
         )
         self._closed = False
 
-    def translate_async(
+    def translate_many_async(
         self,
         source_text: str,
-        target_language: str = "en",
+        target_languages: list[str],
     ) -> None:
         text = source_text.strip()
-        if not text or self._closed:
+        targets = [code for code in dict.fromkeys(target_languages) if code]
+
+        if not text or not targets or self._closed:
             return
 
         settings = Settings.from_env()
@@ -40,27 +42,27 @@ class TranslationService(QObject):
 
         self.status_changed.emit("번역 중")
         self._executor.submit(
-            self._translate,
+            self._translate_many,
             settings,
             text,
-            target_language,
+            targets,
         )
 
-    def _translate(
+    def _translate_many(
         self,
         settings: Settings,
         source_text: str,
-        target_language: str,
+        target_languages: list[str],
     ) -> None:
         try:
             endpoint = settings.translator_endpoint.rstrip("/")
             url = f"{endpoint}/translate"
 
-            params = {
-                "api-version": "3.0",
-                "from": "ko",
-                "to": target_language,
-            }
+            params: list[tuple[str, str]] = [
+                ("api-version", "3.0"),
+                ("from", "ko"),
+            ]
+            params.extend(("to", language) for language in target_languages)
 
             headers = {
                 "Ocp-Apim-Subscription-Key": settings.translator_key,
@@ -79,13 +81,31 @@ class TranslationService(QObject):
             response.raise_for_status()
 
             payload = response.json()
-            translated_text = payload[0]["translations"][0]["text"].strip()
+            translation_items = payload[0]["translations"]
 
-            self.translation_ready.emit(
-                source_text,
-                target_language,
-                translated_text,
-            )
+            translations: dict[str, str] = {}
+            for item in translation_items:
+                language = str(item.get("to", "")).strip()
+                translated_text = str(item.get("text", "")).strip()
+                if language and translated_text:
+                    translations[language] = translated_text
+
+            if not translations:
+                raise ValueError("번역 결과가 비어 있습니다.")
+
+            self.translation_ready.emit(source_text, translations)
+
+            missing = [
+                language
+                for language in target_languages
+                if language not in translations
+            ]
+            if missing:
+                self.error_occurred.emit(
+                    "일부 언어의 번역 결과를 받지 못했습니다: "
+                    + ", ".join(missing)
+                )
+
             self.status_changed.emit("번역 준비됨")
         except requests.Timeout:
             self.error_occurred.emit(
