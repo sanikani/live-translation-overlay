@@ -3,13 +3,18 @@ from __future__ import annotations
 import sounddevice as sd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
     QComboBox,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -17,19 +22,30 @@ from PySide6.QtWidgets import (
 from src.config.settings import Settings
 from src.speech.speech_recognizer import SpeechRecognitionService
 from src.translation.translator import TranslationService
+from src.ui.overlay_window import SubtitleOverlayWindow
 
 
 DEFAULT_MICROPHONE_LABEL = "기본 마이크"
+
+LANGUAGE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("en", "English"),
+    ("zh-Hans", "中文"),
+    ("vi", "Tiếng Việt"),
+    ("th", "ภาษาไทย"),
+)
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
 
-        self.setWindowTitle("실시간 다국어 번역 자막 - Phase 2")
-        self.resize(820, 720)
+        self.setWindowTitle("실시간 다국어 번역 자막")
+        self.resize(860, 780)
 
         self._last_final_text = ""
+        self._language_checkboxes: dict[str, QCheckBox] = {}
+
+        self._overlay = SubtitleOverlayWindow()
 
         self._speech_service = SpeechRecognitionService(self)
         self._speech_service.partial_text.connect(self._show_partial_text)
@@ -39,7 +55,7 @@ class MainWindow(QMainWindow):
 
         self._translation_service = TranslationService(self)
         self._translation_service.translation_ready.connect(
-            self._append_translation
+            self._append_translation_batch
         )
         self._translation_service.status_changed.connect(
             self._set_translation_status
@@ -50,6 +66,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._refresh_microphones()
+        self._refresh_screens()
         self._refresh_translation_status()
 
     def _build_ui(self) -> None:
@@ -58,52 +75,100 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
 
-        title = QLabel("실시간 한국어 → 영어 번역")
+        title = QLabel("실시간 다국어 번역 자막")
         title.setStyleSheet("font-size: 24px; font-weight: 700;")
         layout.addWidget(title)
 
         description = QLabel(
-            "마이크를 선택하고 시작 버튼을 누르면 한국어 발표를 인식합니다. "
-            "확정된 문장만 영어로 번역하므로 말하는 중간 결과는 번역하지 않습니다."
+            "마이크와 번역 언어를 선택한 뒤 시작하세요. "
+            "확정된 한국어 문장을 여러 언어로 동시에 번역해 "
+            "선택한 화면의 강의자료 위에 자막으로 표시합니다."
         )
         description.setWordWrap(True)
         description.setStyleSheet("font-size: 14px;")
         layout.addWidget(description)
 
         microphone_row = QHBoxLayout()
-        microphone_label = QLabel("마이크")
+        microphone_row.addWidget(QLabel("마이크"))
+
         self.microphone_combo = QComboBox()
+        microphone_row.addWidget(self.microphone_combo, 1)
+
         self.refresh_button = QPushButton("새로고침")
         self.refresh_button.clicked.connect(self._refresh_microphones)
-
-        microphone_row.addWidget(microphone_label)
-        microphone_row.addWidget(self.microphone_combo, 1)
         microphone_row.addWidget(self.refresh_button)
         layout.addLayout(microphone_row)
 
+        language_group = QGroupBox("번역 언어")
+        language_layout = QGridLayout(language_group)
+
+        for index, (code, display_name) in enumerate(LANGUAGE_OPTIONS):
+            checkbox = QCheckBox(display_name)
+            checkbox.setChecked(code in {"en", "zh-Hans", "vi"})
+            self._language_checkboxes[code] = checkbox
+            language_layout.addWidget(checkbox, index // 2, index % 2)
+
+        layout.addWidget(language_group)
+
+        overlay_group = QGroupBox("자막 화면 설정")
+        overlay_layout = QGridLayout(overlay_group)
+
+        overlay_layout.addWidget(QLabel("표시할 화면"), 0, 0)
+        self.screen_combo = QComboBox()
+        self.screen_combo.currentIndexChanged.connect(
+            self._apply_overlay_screen
+        )
+        overlay_layout.addWidget(self.screen_combo, 0, 1, 1, 2)
+
+        overlay_layout.addWidget(QLabel("자막 위치"), 1, 0)
+        self.position_combo = QComboBox()
+        self.position_combo.addItem("화면 하단", "bottom")
+        self.position_combo.addItem("화면 상단", "top")
+        self.position_combo.currentIndexChanged.connect(
+            self._apply_overlay_position
+        )
+        overlay_layout.addWidget(self.position_combo, 1, 1, 1, 2)
+
+        overlay_layout.addWidget(QLabel("글자 크기"), 2, 0)
+        self.font_slider = QSlider(Qt.Orientation.Horizontal)
+        self.font_slider.setRange(18, 52)
+        self.font_slider.setValue(28)
+        self.font_slider.valueChanged.connect(self._apply_overlay_font_size)
+        overlay_layout.addWidget(self.font_slider, 2, 1)
+
+        self.font_size_label = QLabel("28")
+        self.font_size_label.setMinimumWidth(32)
+        overlay_layout.addWidget(self.font_size_label, 2, 2)
+
+        layout.addWidget(overlay_group)
+
         button_row = QHBoxLayout()
-        self.start_button = QPushButton("음성 인식 및 번역 시작")
+
+        self.start_button = QPushButton("실시간 번역 시작")
+        self.start_button.clicked.connect(self._start_recognition)
+        button_row.addWidget(self.start_button)
+
         self.stop_button = QPushButton("중지")
         self.stop_button.setEnabled(False)
-
-        self.start_button.clicked.connect(self._start_recognition)
         self.stop_button.clicked.connect(self._stop_recognition)
-
-        button_row.addWidget(self.start_button)
         button_row.addWidget(self.stop_button)
+
         layout.addLayout(button_row)
 
         status_row = QHBoxLayout()
         status_row.addWidget(QLabel("음성 인식"))
+
         self.speech_status_label = QLabel("대기 중")
         self.speech_status_label.setStyleSheet("font-weight: 700;")
         status_row.addWidget(self.speech_status_label)
 
         status_row.addSpacing(24)
-        status_row.addWidget(QLabel("영어 번역"))
+        status_row.addWidget(QLabel("번역"))
+
         self.translation_status_label = QLabel("확인 중")
         self.translation_status_label.setStyleSheet("font-weight: 700;")
         status_row.addWidget(self.translation_status_label)
+
         status_row.addStretch(1)
         layout.addLayout(status_row)
 
@@ -116,43 +181,31 @@ class MainWindow(QMainWindow):
         )
         self.partial_label.setWordWrap(True)
         self.partial_label.setAlignment(Qt.AlignmentFlag.AlignTop)
-        self.partial_label.setMinimumHeight(72)
+        self.partial_label.setMinimumHeight(64)
         self.partial_label.setStyleSheet(
-            "padding: 12px; border: 1px solid #cccccc; border-radius: 6px; "
-            "font-size: 17px;"
+            "padding: 12px; border: 1px solid #cccccc; "
+            "border-radius: 6px; font-size: 16px;"
         )
         layout.addWidget(self.partial_label)
 
-        korean_title = QLabel("확정된 한국어")
-        korean_title.setStyleSheet("font-weight: 700;")
-        layout.addWidget(korean_title)
+        history_title = QLabel("확정 문장 / 번역 기록")
+        history_title.setStyleSheet("font-weight: 700;")
+        layout.addWidget(history_title)
 
-        self.transcript_box = QPlainTextEdit()
-        self.transcript_box.setReadOnly(True)
-        self.transcript_box.setPlaceholderText(
-            "확정된 한국어 문장이 이곳에 쌓입니다."
+        self.history_box = QPlainTextEdit()
+        self.history_box.setReadOnly(True)
+        self.history_box.setPlaceholderText(
+            "확정된 한국어와 선택한 언어의 번역 결과가 여기에 쌓입니다."
         )
-        self.transcript_box.setStyleSheet("font-size: 16px;")
-        layout.addWidget(self.transcript_box, 1)
-
-        english_title = QLabel("영어 번역")
-        english_title.setStyleSheet("font-weight: 700;")
-        layout.addWidget(english_title)
-
-        self.translation_box = QPlainTextEdit()
-        self.translation_box.setReadOnly(True)
-        self.translation_box.setPlaceholderText(
-            "확정된 한국어 문장의 영어 번역이 이곳에 표시됩니다."
-        )
-        self.translation_box.setStyleSheet("font-size: 17px;")
-        layout.addWidget(self.translation_box, 1)
+        self.history_box.setStyleSheet("font-size: 15px;")
+        layout.addWidget(self.history_box, 1)
 
         self.translation_error_label = QLabel("")
         self.translation_error_label.setWordWrap(True)
         self.translation_error_label.setStyleSheet("font-size: 12px;")
         layout.addWidget(self.translation_error_label)
 
-        clear_button = QPushButton("내용 지우기")
+        clear_button = QPushButton("자막 / 기록 지우기")
         clear_button.clicked.connect(self._clear_text)
         layout.addWidget(clear_button)
 
@@ -191,6 +244,76 @@ class MainWindow(QMainWindow):
         finally:
             self.microphone_combo.blockSignals(False)
 
+    def _refresh_screens(self) -> None:
+        current_index = self.screen_combo.currentData()
+
+        self.screen_combo.blockSignals(True)
+        self.screen_combo.clear()
+
+        screens = QApplication.screens()
+        for index, screen in enumerate(screens):
+            geometry = screen.geometry()
+            label = (
+                f"화면 {index + 1} - {screen.name()} "
+                f"({geometry.width()}x{geometry.height()})"
+            )
+            self.screen_combo.addItem(label, index)
+
+        if current_index is not None:
+            combo_index = self.screen_combo.findData(current_index)
+            if combo_index >= 0:
+                self.screen_combo.setCurrentIndex(combo_index)
+
+        self.screen_combo.blockSignals(False)
+        self._apply_overlay_screen()
+
+    def _selected_language_codes(self) -> list[str]:
+        return [
+            code
+            for code, _display_name in LANGUAGE_OPTIONS
+            if self._language_checkboxes[code].isChecked()
+        ]
+
+    def _selected_language_names(self) -> dict[str, str]:
+        selected = set(self._selected_language_codes())
+        return {
+            code: display_name
+            for code, display_name in LANGUAGE_OPTIONS
+            if code in selected
+        }
+
+    def _selected_screen(self):
+        screens = QApplication.screens()
+        screen_index = self.screen_combo.currentData()
+
+        if (
+            isinstance(screen_index, int)
+            and 0 <= screen_index < len(screens)
+        ):
+            return screens[screen_index]
+
+        return QApplication.primaryScreen()
+
+    def _configure_overlay(self) -> None:
+        self._overlay.configure(
+            language_names=self._selected_language_names(),
+            screen=self._selected_screen(),
+            position=self.position_combo.currentData() or "bottom",
+            font_size=self.font_slider.value(),
+        )
+
+    def _apply_overlay_screen(self) -> None:
+        self._overlay.set_target_screen(self._selected_screen())
+
+    def _apply_overlay_position(self) -> None:
+        self._overlay.set_position(
+            self.position_combo.currentData() or "bottom"
+        )
+
+    def _apply_overlay_font_size(self, value: int) -> None:
+        self.font_size_label.setText(str(value))
+        self._overlay.set_font_size(value)
+
     def _refresh_translation_status(self) -> None:
         settings = Settings.from_env()
         if settings.translator_configured:
@@ -199,6 +322,15 @@ class MainWindow(QMainWindow):
             self._set_translation_status("설정 필요")
 
     def _start_recognition(self) -> None:
+        selected_languages = self._selected_language_codes()
+        if not selected_languages:
+            QMessageBox.information(
+                self,
+                "번역 언어 선택",
+                "번역할 언어를 한 개 이상 선택해 주세요.",
+            )
+            return
+
         settings = Settings.from_env()
         if not settings.speech_configured:
             QMessageBox.information(
@@ -213,12 +345,14 @@ class MainWindow(QMainWindow):
             self._set_translation_status("설정 필요")
             self.translation_error_label.setText(
                 "Translator 설정이 없어 현재는 한국어 음성 인식만 동작합니다. "
-                "docs/SETUP.md를 참고해 Translator Key를 추가하면 영어 번역도 "
-                "자동으로 시작됩니다."
+                "docs/SETUP.md를 참고해 Translator Key를 추가해 주세요."
             )
         else:
             self.translation_error_label.setText("")
             self._set_translation_status("번역 준비됨")
+
+        self._configure_overlay()
+        self._overlay.clear_subtitles()
 
         microphone_name = self.microphone_combo.currentData()
 
@@ -226,6 +360,10 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(True)
         self.microphone_combo.setEnabled(False)
         self.refresh_button.setEnabled(False)
+        self.screen_combo.setEnabled(False)
+
+        for checkbox in self._language_checkboxes.values():
+            checkbox.setEnabled(False)
 
         self._speech_service.start(microphone_name)
 
@@ -234,6 +372,7 @@ class MainWindow(QMainWindow):
 
     def _stop_recognition(self) -> None:
         self._speech_service.stop()
+        self._overlay.hide()
         self._set_controls_idle()
 
     def _show_partial_text(self, text: str) -> None:
@@ -248,30 +387,49 @@ class MainWindow(QMainWindow):
         if not normalized:
             return
 
-        # SDK 이벤트가 바로 연속해서 같은 확정 문장을 전달한 경우 중복 요청을 막는다.
         if normalized == self._last_final_text:
             return
 
         self._last_final_text = normalized
-        self.transcript_box.appendPlainText(normalized)
+        self.history_box.appendPlainText(f"[한국어] {normalized}")
 
         settings = Settings.from_env()
-        if settings.translator_configured:
-            self._translation_service.translate_async(
+        selected_languages = self._selected_language_codes()
+
+        if settings.translator_configured and selected_languages:
+            self._translation_service.translate_many_async(
                 normalized,
-                target_language="en",
+                selected_languages,
             )
 
-    def _append_translation(
+    def _append_translation_batch(
         self,
         source_text: str,
-        target_language: str,
-        translated_text: str,
+        translations: object,
     ) -> None:
-        if target_language != "en":
+        if not isinstance(translations, dict):
             return
 
-        self.translation_box.appendPlainText(translated_text)
+        names = dict(LANGUAGE_OPTIONS)
+        selected_codes = self._selected_language_codes()
+
+        ordered_translations: dict[str, str] = {}
+        for code in selected_codes:
+            translated_text = str(translations.get(code, "")).strip()
+            if not translated_text:
+                continue
+
+            ordered_translations[code] = translated_text
+            display_name = names.get(code, code)
+            self.history_box.appendPlainText(
+                f"[{display_name}] {translated_text}"
+            )
+
+        self.history_box.appendPlainText("")
+
+        if ordered_translations:
+            self._overlay.update_subtitles(ordered_translations)
+
         self.translation_error_label.setText("")
 
     def _set_speech_status(self, status: str) -> None:
@@ -288,30 +446,35 @@ class MainWindow(QMainWindow):
 
     def _show_speech_error(self, message: str) -> None:
         QMessageBox.critical(self, "음성 인식 오류", message)
+        self._overlay.hide()
         self._set_controls_idle()
 
     def _show_translation_error(self, message: str) -> None:
-        # 번역 오류 때문에 발표용 음성 인식까지 중단하지 않는다.
         self.translation_error_label.setText(message)
 
     def _clear_text(self) -> None:
-        self.transcript_box.clear()
-        self.translation_box.clear()
+        self.history_box.clear()
         self.partial_label.setText(
             "말을 시작하면 여기에 임시 인식 결과가 표시됩니다."
         )
         self.translation_error_label.setText("")
         self._last_final_text = ""
+        self._overlay.clear_subtitles()
 
     def _set_controls_idle(self) -> None:
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.microphone_combo.setEnabled(True)
         self.refresh_button.setEnabled(True)
+        self.screen_combo.setEnabled(True)
+
+        for checkbox in self._language_checkboxes.values():
+            checkbox.setEnabled(True)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt API 이름 유지
         if self._speech_service.is_running:
             self._speech_service.stop()
 
         self._translation_service.shutdown()
+        self._overlay.close()
         event.accept()
